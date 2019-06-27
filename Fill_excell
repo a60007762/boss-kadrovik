@@ -1,0 +1,111 @@
+
+
+--- Считываем шаблон из БД
+execute xocxfree{*};
+Local PathTemplate;
+alias PathTemplate := @@xReport(open User_.XLT);
+if PathTemplate[''] = '' then { 
+ Error [\3Файл User_.XLT не найден !!!]; 
+};
+
+-----------------Создаем результирующую таблицу ---------------------------------------
+if (object_id('tempdb..#rez') is not null) Then DROP TABLE #rez;
+	CREATE TABLE #rez 
+				( N tinyint,
+				 name_fld char(50),
+				 m1 float, m2 float, m3 float, m4 float, m5 float, m6 float,
+				 m7 float, m8 float, m9 float, m10 float, m11 float, m12 float, _13 float, ttl float);
+
+
+----------------Заполняем результирующую таблицу -------------------------------------
+	exec user_	_dateask_year; 
+
+	sTable @$_sql
+	select 
+		239,
+		#rez.name_fld,
+		#rez.m1,
+		#rez.m2,
+		#rez.m3,
+		#rez.m4,
+		#rez.m5,
+		#rez.m6,
+		#rez.m7,
+		#rez.m8,
+		#rez.m9,
+		#rez.m10,
+		#rez.m11,
+		#rez.m12,
+		#rez._13,
+		isnull(cast(#rez.ttl as varchar(10)) ,'')
+	from #rez 
+	order by #rez.N;
+
+
+
+Excel.Application as Excel;
+Excel.Visible=True;
+Excel.Workbooks.Open(PathTemplate[""]);
+
+VB {
+Dim Ex 
+Dim Sh
+};
+
+VB {
+Set ExcelApp = GetObject(,"Excel.Application")
+Set Sh = ExcelApp.ActiveSheet
+};
+
+let _list_rename = 'Лист1';
+let n_ := 5;
+
+scan @$_sql
+execute {
+Excel.ActiveWorkbook.sheets(1).cells(n_, 1) = @$_sql:2[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 2) = @$_sql:3[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 3) = @$_sql:4[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 4) = @$_sql:5[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 5) = @$_sql:6[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 6) = @$_sql:7[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 7) = @$_sql:8[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 8) = @$_sql:9[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 9) = @$_sql:10[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 10) = @$_sql:11[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 11) = @$_sql:12[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 12) = @$_sql:13[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 13) = @$_sql:14[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 14) = @$_sql:15[''];
+Excel.ActiveWorkbook.sheets(1).cells(n_, 15) = @$_sql:16[''];
+
+
+let n_ := n_ + 1;
+};
+	alias _Title1 = '' Период: _dateask_year год;
+
+
+	vb.( :_Title1,:_d_m_end){(tt, DD);
+
+	 	ExcelApp.Cells(2, 1).value = tt
+		ExcelApp.Range(ExcelApp.Cells(1, 2+DD), ExcelApp.Cells(1, 14)).Select
+		ExcelApp.Selection.EntireColumn.Hidden = True
+
+		ExcelApp.run "MAC"
+	
+	    };
+
+	--показать Excel
+	vb{ExcelApp.visible = 1
+	Set ExcelApp = nothing };
+	VB.FREE;
+
+
+
+
+
+
+--browser{ select * from #rez},, 1111;
+
+DROP TABLE #rez;
+free PathTemplate,*;
+----,_Title1,*;
