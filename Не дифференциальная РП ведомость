@@ -1,0 +1,581 @@
+Перед фиксацией программа спросит как именно фиксировать - либо по старому с учетом предыдущих РП ведомостей, 
+либо без учёта предыдущих. Доработана тиражная Х процедура zrp_qbe_рп_вед_PROC, текст во вложении. 
+Доработки выделены ##############
+-- zrp_qbe_рп_вед_PROC
+--
+LOCAL
+{ 
+	n_d;
+	d_d;
+	identity_; 
+	_rs_; 
+	row_count_; 
+	people_count_; 
+	field_excl_	=''; 
+	field_sp_	='';
+	field_sp1_	='';  
+	field_spG_	='';  
+	field_null_ =''; 
+	field_add_	=''; 
+	zero_; 
+	docum_; 
+	mdate_;
+	uname_;
+	_id_STATUS_;
+	_old_status; 
+	_new_status;
+};
+
+-- Изменить статус
+IF @zrp_qbe_рп_вед:operat == 4 THEN 
+{
+	if @zrp_qbe_рп_вед:id_hr_status['] > 0 then
+	{ 
+		Execute hr_prc_status_UPD_id('lic_RPVED_title', 'id', @zrp_qbe_рп_вед_СПИСОК:id, @zrp_qbe_рп_вед:id_hr_status[']);
+		MSG 2037, @zrp_qbe_рп_вед_СПИСОК;
+	};
+-- распечатать по нарастающей
+} ELSE IF @zrp_qbe_рп_вед:operat == 0  THEN 
+{
+	-- список работников
+	IF @zrp_qbe_рп_вед:byFirm == 0 THEN execute zrp_qbe_рп_вед_emps();
+	IF object_id('tempdb..#emps') IS NOT NULL THEN ALIAS emps = #emps;
+	LET 
+	{ 	
+        n_d    := @zrp_qbe_рп_вед:nd;
+        d_d    := @zrp_qbe_рп_вед:dd;
+		zero_  := @zrp_qbe_рп_вед:zero;
+		docum_ := @zrp_qbe_рп_вед:docum;
+    }; 
+	execute zrp_PRC_Report_T49(@zrp_qbe_рп_вед:byFirm, n_d[''], d_d, zero_, docum_, @zrp_qbe_рп_вед:shop);
+
+-- зафиксировать текущий результат
+} ELSE IF @zrp_qbe_рп_вед:operat == 1 THEN 
+{
+--	MSG \3 Зафиксировать результаты расчета? \7;
+--	IF _result == 12  THEN 
+--	{
+--#################### #3557
+let _flg = 0;
+let _ttl_ = '';
+--	MSG \3 Зафиксировать результаты расчета? \7;
+MSG[\3Зафиксировать расчет с учетом предыдущих РП ведомостей?
+
+ДА - с учётом предыдущих РП ведомостей (дифференциальная)
+НЕТ - без учета предыдущих РП ведомостей],0x16,'Фиксация РП ведомости';
+--ДА - 12 НЕТ - 13 Прекратить - 14
+If _RESULT == 13 Then
+{
+BEGIN TRANSACTION;
+update lic_RPVED set cmonth=@@4*12+@@5+10, rep_branch_id=@@4*12+@@5+10 where cmonth = @@4*12+@@5;
+update sl_uni_tax_RPVED set cmonth=@@4*12+@@5+10, rep_branch_id=@@4*12+@@5+10 where cmonth = @@4*12+@@5;
+update p_doxod_RPVED set dt = dateadd(mm,10,dt), rep_branch_id=@@4*12+@@5+10 where month(dt)=@@5 and year(dt)=@@4;
+commit;
+let _ttl_ = '(без предыдущих)';
+}
+else if _RESULT == 14 Then error
+else if _RESULT == 11 Then error;
+-----------######### #3557
+
+
+		-- список работников
+		IF @zrp_qbe_рп_вед:byFirm == 0 THEN execute zrp_qbe_рп_вед_emps();
+		IF object_id('tempdb..#emps') IS NOT NULL THEN ALIAS emps = #emps;
+
+		BEGIN TRANSACTION;
+
+			LET n_doc := @zrp_qbe_рп_вед:nd;
+			LET mdate_ = getdate()[dd.mm.yyyy];
+			LET uname_ = @@netname; 
+			ALIAS _rs_ = ;
+
+			IF @zrp_qbe_рп_вед:byFirm !== 1 THEN 
+				ALIAS _rs_ = AND pid IN (SELECT PID FROM emps WHERE st = CURSTATION);
+--ALIAS _rs_ = AND EXISTS (SELECT emps.PID FROM emps WHERE emps.st = CURSTATION AND emps.pid=pid);				
+--ALIAS _rs_ = JOIN (SELECT PID as pPid FROM emps WHERE st = CURSTATION) emps ON emps.ppid=pid;
+
+			free lic, sl_uni_tax, p_doxod;
+			IF object_id('tempdb..#lic') 		IS NOT NULL THEN drop table [#lic];
+			IF object_id('tempdb..#sl_uni_tax') IS NOT NULL THEN drop table [#sl_uni_tax];
+			IF object_id('tempdb..#p_doxod') 	IS NOT NULL THEN drop table [#p_doxod];
+
+			INSERT INTO 
+				lic_RPVED_title 
+				(
+				name,   
+				tmonth,   
+				tyear,  
+				docnum,  
+				mdate,      
+				uname,   
+				role_code,   
+				id_firm, 
+				doc_date,
+				Mask,
+				id_acc_group
+				)
+			VALUES 
+				(
+				'Расчетно/платежная ведомость', 
+				@@tMonth, 
+				@@tYear, 
+				@zrp_qbe_рп_вед:nd[''], 
+				mdate_, 
+				uname_[''], 
+				@@role_code, 
+				@@id_firm, 
+				@zrp_qbe_рп_вед:dd,
+				CurrentMaskDoc[''],
+				@zrp_qbe_рп_вед:id_acc_group
+				);
+			SELECT @@identity INTO :identity_;
+
+			-- Статус
+			LET _id_STATUS_ := 0;
+			SELECT TOP 1  dbo.HRFN_STATUS_START(mdate_[''],'lic_RPVED_title') INTO _id_STATUS_; 
+			if _id_STATUS_['] > 0 then 
+				Execute hr_prc_status_UPD_id('lic_RPVED_title', 'id', identity_, _id_STATUS_[']);
+			-- Статус
+
+			-- Смотрим, что уже выплачивали нашим работникам
+			Execute 
+			{
+			--	ALIAS { field_excl_ := days=-(Days-128), hours=-Hours, summa=-Summa, cDays=-cDays; };
+				ALIAS { field_excl_ := days=-(Days-128), hours=-Hours, summa=-Summa, cDays=-cDays, "bp"=0, prId=0; };
+				LET field_sp_ 		:= @@zrp_ListField( 'LIC', field_excl_[''] ) as string;
+
+				$SELECT 
+					field_excl_, field_sp_
+				INTO 
+					#lic
+				FROM 
+					Lic_RPVED _hintbrowser
+					--_rs_
+				WHERE 
+					cmonth  = @@tYear*12+@@tMonth AND 
+					id_firm = @@id_firm
+					_rs_;
+
+				ALIAS 
+				{ 
+					field_excl_ := 	summa=-summa,
+									SK=-SK,
+									tax_PFR=-tax_PFR,
+									tax_FSS=-tax_FSS,
+									tax_FMSf=-tax_FMSf,
+									tax_FMS=-tax_FMS,
+									tax_PFRS=-tax_PFRS,
+									tax_PFRN=-tax_PFRN,
+									tax_FB=-tax_FB,
+									tax_FSSn=-tax_FSSn,
+									tax_FSSd=-tax_FSSd,
+									tax_FSS_S=-tax_FSS_S,
+									tax_FMSf_S=-tax_FMSf_S,
+									tax_FMS_S=-tax_FMS_S,
+									tax_PFRS_S=-tax_PFRS_S,
+									tax_PFRN_S=-tax_PFRN_S,
+									tax_FSS_U=-tax_FSS_U,
+									tax_FMSf_U=-tax_FMSf_U,
+									tax_FMS_U=-tax_FMS_U,
+									tax_PFRS_U=-tax_PFRS_U,
+									tax_PFRN_U=-tax_PFRN_U,
+									tax_FSS_P=-tax_FSS_P,
+									tax_FMSf_P=-tax_FMSf_P,
+									tax_FMS_P=-tax_FMS_P,
+									tax_PFRS_P=-tax_PFRS_P,
+									tax_PFRN_P=-tax_PFRN_P,
+									tax_SOL=-tax_SOL,
+									tax_SOL_S=-tax_SOL_S,
+									tax_SOL_U=-tax_SOL_U,
+									tax_SOL_P=-tax_SOL_P,
+									tax_SOLa=-tax_SOLa,
+									tax_SOLa_S=-tax_SOLa_S,
+									tax_SOLa_U=-tax_SOLa_U,
+									tax_SOLa_P=-tax_SOLa_P,
+									tax_PFRd=-tax_PFRd,				
+									tax_PFR1=-tax_PFR1,				
+									tax_PFR2=-tax_PFR2,				
+									tax_PFR3=-tax_PFR3;				
+				};
+				LET field_sp_	:= @@zrp_ListField( 'SL_UNI_TAX', field_excl_[''], 0, 1 ) as string;
+
+				$SELECT 
+					field_excl_, field_sp_
+				INTO 
+					#sl_uni_tax
+				FROM 
+					sl_uni_tax_RPVED _hintbrowser
+					--_rs_
+				WHERE 
+					cmonth  = @@tYear*12+@@tMonth AND 
+					id_firm = @@id_firm
+					_rs_;
+
+				ALIAS	{ field_excl_ := summa = -summa, snal = -snal, lgota=-lgota, snal03=-snal03; };
+				LET field_sp_	:= @@zrp_ListField( 'p_doxod', field_excl_[''], 0, 1 ) as string;
+
+				$SELECT 
+					field_excl_, field_sp_
+				INTO 
+					#p_doxod 
+				FROM 
+					p_doxod_RPVED _hintbrowser
+					--_rs_
+
+				WHERE 
+					year(dt)*12 + month(dt) <= @@tYear*12+@@tMonth
+					_rs_;
+			};
+
+			-- Смотрим, что полагается выплатить в целом за месяц
+			--ALIAS { field_excl_ := days=Days-128; };
+			ALIAS { field_excl_ := days=Days-128, cdays=cDays, "bp"=0, prId=0; };
+			LET field_sp_ 	:= @@zrp_ListField( 'LIC', field_excl_[''] ) as string;
+			LET field_null_ := @@zrp_ListField( 'LIC', field_excl_[''], 0, 1 ) as string;
+
+			INSERT INTO #lic (days, cdays, bp, prId, field_sp_)
+			SELECT field_excl_, field_null_
+			  FROM 
+					Lic _hintbrowser
+					--_rs_
+
+			 WHERE cmonth  = @@tYear*12+@@tMonth
+			   AND id_firm = @@id_firm
+				_rs_;
+
+			LET field_sp_	:= @@zrp_ListField( 'SL_UNI_TAX' ) as string;
+			LET field_null_	:= @@zrp_ListField( 'SL_UNI_TAX', '', 0, 1 ) as string;
+
+			INSERT INTO #sl_uni_tax (field_sp_)
+			SELECT field_null_
+			  FROM sl_uni_tax _hintbrowser
+					--_rs_
+
+			 WHERE cmonth  = @@tYear*12+@@tMonth
+			   AND id_firm = @@id_firm
+				_rs_;
+
+			LET field_sp_	:= @@zrp_ListField( 'p_doxod' ) as string;
+			LET field_null_	:= @@zrp_ListField( 'p_doxod', '', 0, 1 ) as string;
+
+			INSERT INTO #p_doxod (field_sp_)
+	  	      SELECT field_null_
+			  FROM p_doxod _hintbrowser
+					--_rs_
+
+			 WHERE year(dt)*12 + month(dt) <= @@tYear*12+@@tMonth
+					_rs_;
+
+			-- Сохранить ИТОГ
+			ALIAS 
+			{ 
+		--		field_excl_ := ID_Lic_RPVED_Title=identity_,Hours=sum(Hours),Summa=sum(Summa),cmonth=@@tYear*12+@@tMonth,cDays=Sum(cDays),bp=0;
+		--		field_add_  := ID_Lic_RPVED_Title,Hours,Summa,cmonth,cDays,bp; 
+				field_excl_ := ID_Lic_RPVED_Title=identity_,Days=128+sum(Days),Hours=sum(Hours),Summa=sum(Summa),cmonth=@@tYear*12+@@tMonth,cDays=Sum(cDays);
+				field_add_  := ID_Lic_RPVED_Title,Days,Hours,Summa,cmonth,cDays; 
+			};
+			LET field_sp_ 	:= @@zrp_ListField( 'Lic_RPVED', field_excl_[''],0,1 ) as string;
+			LET field_sp1_ 	:= @@zrp_ListField( 'Lic_RPVED', field_excl_[''] ) as string;
+			LET field_spG_ 	:= @@zrp_ListField( 'Lic_RPVED', field_excl_[''],0,2 ) as string;
+
+			INSERT INTO Lic_RPVED ( field_add_, field_sp1_ )
+			SELECT field_excl_, field_sp_ 
+			  FROM #lic 
+			 WHERE cmonth = @@tYear*12+@@tMonth 
+			 GROUP BY field_spG_
+			HAVING round(sum(Summa) + 0,2) <> 0;
+
+			ALIAS 
+			{ 
+				field_excl_ := 	RPVED_id=identity_,
+								cmonth=@@tYear*12+@@tMonth,
+								mdate=mdate_,
+								uname=uname_[''],
+								summa=Sum(summa),
+								sk=Sum(SK),
+								tax_PFR=Sum(tax_PFR),
+								tax_FSS=Sum(tax_FSS),
+								tax_FMSf=Sum(tax_FMSf),
+								tax_FMS=Sum(tax_FMS),
+								tax_PFRS=Sum(tax_PFRS),
+								tax_PFRN=Sum(tax_PFRN),
+								tax_FB=Sum(tax_FB),
+								tax_FSSn=Sum(tax_FSSn),
+								tax_FSSd=Sum(tax_FSSd),
+								tax_FSS_S=Sum(tax_FSS_S),
+								tax_FMSf_S=Sum(tax_FMSf_S),
+								tax_FMS_S=Sum(tax_FMS_S),
+								tax_PFRS_S=Sum(tax_PFRS_S),
+								tax_PFRN_S=Sum(tax_PFRN_S),
+								tax_FSS_U=Sum(tax_FSS_U),
+								tax_FMSf_U=Sum(tax_FMSf_U),
+								tax_FMS_U=Sum(tax_FMS_U),
+								tax_PFRS_U=Sum(tax_PFRS_U),
+								tax_PFRN_U=Sum(tax_PFRN_U),
+								tax_FSS_P=Sum(tax_FSS_P),
+								tax_FMSf_P=Sum(tax_FMSf_P),
+								tax_FMS_P=Sum(tax_FMS_P),
+								tax_PFRS_P=Sum(tax_PFRS_P),
+								tax_PFRN_P=Sum(tax_PFRN_P),
+								tax_SOL=Sum(tax_SOL),
+								tax_SOL_S=Sum(tax_SOL_S),
+								tax_SOL_U=Sum(tax_SOL_U),
+								tax_SOL_P=Sum(tax_SOL_P),
+								tax_SOLa=Sum(tax_SOLa),
+								tax_SOLa_S=Sum(tax_SOLa_S),
+								tax_SOLa_U=Sum(tax_SOLa_U),
+								tax_SOLa_P=Sum(tax_SOLa_P),
+								tax_PFRd=Sum(tax_PFRd), 
+								tax_PFR1=Sum(tax_PFR1), 
+								tax_PFR2=Sum(tax_PFR2),
+								tax_PFR3=Sum(tax_PFR3);
+			};
+			ALIAS 
+			{ 
+				field_add_  := 	RPVED_id,
+								cmonth,
+								mdate,
+								uname,
+								summa,
+								sk,
+								tax_PFR,
+								tax_FSS,
+								tax_FMSf,
+								tax_FMS,
+								tax_PFRS,
+								tax_PFRN,
+								tax_FB,
+								tax_FSSn,
+								tax_FSSd,
+								tax_FSS_S,
+								tax_FMSf_S,
+								tax_FMS_S,
+								tax_PFRS_S,
+								tax_PFRN_S,
+								tax_FSS_U,
+								tax_FMSf_U,
+								tax_FMS_U,
+								tax_PFRS_U,
+								tax_PFRN_U,
+								tax_FSS_P,
+								tax_FMSf_P,
+								tax_FMS_P,
+								tax_PFRS_P,
+								tax_PFRN_P,
+								tax_SOL,
+								tax_SOL_S,
+								tax_SOL_U,
+								tax_SOL_P,
+								tax_SOLa,
+								tax_SOLa_S,
+								tax_SOLa_U,
+								tax_SOLa_P,
+								tax_PFRd, 
+								tax_PFR1,
+								tax_PFR2,
+								tax_PFR3;
+			};
+			LET field_sp_ 	:= @@zrp_ListField( 'sl_uni_tax_RPVED', field_excl_[''],0,1 ) as string;
+			LET field_sp1_ 	:= @@zrp_ListField( 'sl_uni_tax_RPVED', field_excl_[''] ) as string;
+
+			INSERT INTO sl_uni_tax_RPVED ( field_add_, field_sp1_ )
+			SELECT  field_excl_, field_sp_ 
+			  FROM #sl_uni_tax 
+			 WHERE cmonth = @@tYear*12+@@tMonth 
+			 GROUP BY field_sp1_
+			HAVING 
+				round(Sum(Summa)   	 + 0,2)   != 0 OR 
+				round(Sum(SK)      	 + 0,2)   != 0 OR 
+				round(Sum(tax_PFR)	 + 0,2)   != 0 OR
+				round(Sum(tax_FSS)	 + 0,2)   != 0 OR
+				round(Sum(tax_FMSf)	 + 0,2)   != 0 OR
+				round(Sum(tax_FMS)	 + 0,2)   != 0 OR
+				round(Sum(tax_PFRS)	 + 0,2)   != 0 OR
+				round(Sum(tax_PFRN)	 + 0,2)   != 0 OR
+				round(Sum(tax_FB)	 + 0,2)   != 0 OR
+				round(Sum(tax_FSSn)	 + 0,2)   != 0 OR
+				round(Sum(tax_FSSd)	 + 0,2)   != 0 OR
+				round(Sum(tax_FSS_S) + 0,2)   != 0 OR
+				round(Sum(tax_FMSf_S) + 0,2)  != 0 OR
+				round(Sum(tax_FMS_S) + 0,2)   != 0 OR
+				round(Sum(tax_PFRS_S) + 0,2)  != 0 OR
+				round(Sum(tax_PFRN_S) + 0,2)  != 0 OR
+				round(Sum(tax_FSS_U) + 0,2)   != 0 OR
+				round(Sum(tax_FMSf_U) + 0,2)  != 0 OR
+				round(Sum(tax_FMS_U) + 0,2)   != 0 OR
+				round(Sum(tax_PFRS_U) + 0,2)  != 0 OR
+				round(Sum(tax_PFRN_U) + 0,2)  != 0 OR
+				round(Sum(tax_FSS_P) + 0,2)   != 0 OR
+				round(Sum(tax_FMSf_P) + 0,2)  != 0 OR
+				round(Sum(tax_FMS_P) + 0,2)   != 0 OR
+				round(Sum(tax_PFRS_P) + 0,2)  != 0 OR
+				round(Sum(tax_PFRN_P) + 0,2)  != 0 OR
+				round(Sum(tax_SOL)	 + 0,2)   != 0 OR
+				round(Sum(tax_SOL_S) + 0,2)   != 0 OR
+				round(Sum(tax_SOL_U) + 0,2)   != 0 OR
+				round(Sum(tax_SOL_P) + 0,2)   != 0 OR
+				round(Sum(tax_SOLa)	 + 0,2)   != 0 OR
+				round(Sum(tax_SOLa_S) + 0,2)  != 0 OR
+				round(Sum(tax_SOLa_U) + 0,2)  != 0 OR
+				round(Sum(tax_SOLa_P) + 0,2)  != 0 OR
+				round(Sum(tax_PFR1) + 0,2)    != 0 OR
+				round(Sum(tax_PFR2) + 0,2)    != 0 OR
+				round(Sum(tax_PFR3) + 0,2)    != 0 OR
+				round(Sum(tax_PFRd)	 + 0,2)   != 0; 
+
+/* W 19509
+			INSERT INTO sl_uni_tax_RPVED ( field_add_, field_sp1_ )
+			SELECT  field_excl_, field_sp_ 
+			  FROM #sl_uni_tax 
+			 WHERE cmonth = @@tYear*12+@@tMonth 
+			 GROUP BY field_sp1_
+			HAVING 
+				Sum(Summa+SK+tax_PFR+tax_FSS+tax_FMSf+tax_FMS+tax_PFRS+tax_PFRN+tax_FB+tax_FSSn+tax_FSSd+tax_FSS_S+tax_FMSf_S+tax_FMS_S+tax_PFRS_S+tax_PFRN_S+tax_FSS_U+tax_FMSf_U
+				+tax_FMS_U+tax_PFRS_U+tax_PFRN_U+tax_FSS_P+tax_FMSf_P+tax_FMS_P+tax_PFRS_P+tax_PFRN_P+tax_SOL+tax_SOL_S+tax_SOL_U+tax_SOL_P+tax_SOLa+tax_SOLa_S+tax_SOLa_U+tax_SOLa_P+
+				tax_PFR1+tax_PFR2+tax_PFR3+tax_PFRd) <> 0;
+*/
+			ALIAS 
+			{ 
+				field_excl_ := RPVED_id=identity_,mdate=mdate_,uname=uname_[''],summa=Sum(summa),snal=Sum(snal),lgota=Sum(lgota),snal03=Sum(snal03);
+				field_add_  := RPVED_id,mdate,uname,summa,snal,lgota,snal03; 
+			};
+			LET field_sp_ 	:= @@zrp_ListField( 'p_doxod_RPVED', field_excl_[''],0,1 ) as string;
+			LET field_sp1_ 	:= @@zrp_ListField( 'p_doxod_RPVED', field_excl_[''] ) as string;
+
+			INSERT INTO p_doxod_RPVED
+	  	            ( field_add_, field_sp1_ )
+	  	      SELECT field_excl_, field_sp_ 
+			  FROM #p_doxod
+			 WHERE year(dt)*12 + month(dt) <= @@tYear*12+@@tMonth
+			 GROUP BY field_sp1_
+			HAVING round(Sum(Summa) + 0,2) != 0 OR 
+				 round(Sum(Snal)   + 0,2) != 0 OR 
+				 round(Sum(lgota)  + 0,2) != 0 OR 
+				 round(Sum(Snal03) + 0,2) != 0;
+
+			-- Заполнить реквизиты по ведомости
+			SELECT count(DISTINCT pid), count(*) 
+			  INTO :people_count_, :row_count_ 
+			  FROM Lic_RPVED 
+			 WHERE ID_Lic_RPVED_Title = identity_;
+
+			UPDATE lic_RPVED_title SET row_count = row_count_, people_count = people_count_
+			 WHERE id = identity_;
+
+			-- Установить номер очередной ведомости
+			LET n_doc 				:= @@zrp_maxnumdoc(@@id_firm, id_, @@tYear, 0, CurrentMaskDoc);
+			LET @zrp_qbe_рп_вед:nd 	:= n_doc[''];
+			DRAWFIELD @zrp_qbe_рп_вед, nd;
+
+		COMMIT;
+---################## #3557
+
+--возвращаю РП ведомости обратно если фиксировали НЕ дифференциальную
+If _ttl_[''] == '(без предыдущих)' Then
+{
+BEGIN TRANSACTION;
+update lic_RPVED set cmonth=@@4*12+@@5, rep_branch_id=0 where cmonth=@@4*12+@@5+10 and rep_branch_id=@@4*12+@@5+10;
+update sl_uni_tax_RPVED set cmonth=@@4*12+@@5, rep_branch_id=0 where cmonth=@@4*12+@@5+10 and rep_branch_id=@@4*12+@@5+10;
+update p_doxod_RPVED set dt = dateadd(mm,-10,dt), rep_branch_id=0 where rep_branch_id=@@4*12+@@5+10;
+commit;
+update lic_RPVED_title set name = name + _ttl_[''] where id = identity_;
+};
+---################## #3557
+		MSG 2037, @zrp_qbe_рп_вед_СПИСОК;
+	};
+
+-- подготовить диффир.ведомость
+} ELSE IF @zrp_qbe_рп_вед:operat == 2 THEN 
+{
+	LET identity_ := @zrp_qbe_рп_вед_СПИСОК:id;
+
+	FREE emps;
+	IF object_id('tempdb..#emps') IS NOT NULL  THEN drop table [#emps];
+
+	-- создание временных таблиц #LIC, #SL_UNI_TAX, #p_doxod для многорасчетности
+	Execute 
+	{
+		$SELECT 
+			P.pId, C.Auto_Card, P.Num_Tab, C.name+' '+left(C.name_i,1)+'. '+left(C.name_o,1)+'.' AS fName, R.wage, CURSTATION AS st, R.code_appoint, R.work_code, R.code_syspay
+		INTO 
+			#emps
+		FROM 
+			card C _hintbrowser, people P _hintbrowser, pr_current R _hintbrowser, emps E _hintbrowser,
+			(
+			SELECT pid FROM lic_RPVED _hintbrowser WHERE ID_Lic_RPVED_Title = identity_
+			UNION 
+			SELECT pid FROM sl_uni_tax_RPVED _hintbrowser WHERE RPVED_id = identity_
+			UNION 
+			SELECT pid FROM p_doxod_RPVED _hintbrowser WHERE RPVED_id = identity_
+			) as fff
+		WHERE 
+			C.auto_card    = P.auto_card 	AND 
+			P.pid          = R.pid			AND 
+			R.date_trans  <= @@last_date 	AND 
+			R.date_depart >= @@last_date	AND 
+			P.pid		   = E.pid			AND
+			E.st		   = curstation		AND		
+			P.pid          = fff.pid
+	};
+	Execute zrp_qbe_рп_вед_create(@@tYear,@@tMonth,identity_);
+
+	-- подмена таблиц
+	IF object_id('tempdb..#emps') 		IS NOT NULL THEN ALIAS emps 		= #emps;
+	IF object_id('tempdb..#lic')        IS NOT NULL THEN ALIAS lic 			= #lic;
+	IF object_id('tempdb..#sl_uni_tax') IS NOT NULL THEN ALIAS sl_uni_tax 	= #sl_uni_tax;
+	IF object_id('tempdb..#p_doxod')    IS NOT NULL THEN ALIAS p_doxod		= #p_doxod;
+
+	LET 
+	{ 
+        n_d    := @zrp_qbe_рп_вед_СПИСОК:docnum;
+		zero_  := @zrp_qbe_рп_вед:zero;
+		docum_ := @zrp_qbe_рп_вед:docum;
+	};
+	LET d_d = IsNull(@zrp_qbe_рп_вед_СПИСОК:doc_date,'1900-01-01') as date;
+	execute zrp_PRC_Report_T49(0, n_d[''], d_d, zero_, docum_, @zrp_qbe_рп_вед:shop);
+
+-- удалить ранее сохраненную
+} ELSE IF @zrp_qbe_рп_вед:operat == 3 THEN 
+{
+	IF IsNull(@zrp_qbe_рп_вед_СПИСОК:id,0) <> 0 THEN
+	{
+		IF @@hr_fnc_status_noMDF('lic_RPVED_title', 'id', @zrp_qbe_рп_вед_СПИСОК:id) == 1 THEN  
+		{
+			MSG [\3 Удалить ведомость № @zrp_qbe_рп_вед_СПИСОК:docnum['] нельзя] 4, 0x01;
+
+		} ELSE 
+		{
+			IF EXISTS(SELECT 1 FROM gl_docs WHERE id_RPVED = @zrp_qbe_рп_вед_СПИСОК:id) THEN
+			{
+				MSG [\3 Удалить ведомость № @zrp_qbe_рп_вед_СПИСОК:docnum['] нельзя: \7 \10\3 Есть ведомости, созданные по ее данным] 4, 0x01;
+
+			} ELSE
+			{
+				MSG \3 Удалить ведомость № @zrp_qbe_рп_вед_СПИСОК:docnum['] ? \7\10\3 Эта операция необратима!;
+				IF _result == 12  THEN 
+				{
+				BEGIN TRANSACTION;
+
+					-- Возвращаем назад нумерацию документа
+					LET @zrp_qbe_рп_вед:nd := @@zrp_maxnumdoc(@@id_firm, id_, @zrp_qbe_рп_вед_СПИСОК:tyear, @zrp_qbe_рп_вед_СПИСОК:docnum, @zrp_qbe_рп_вед_СПИСОК:Mask);
+
+					DELETE FROM Lic_RPVED 			WHERE ID_Lic_RPVED_Title = @zrp_qbe_рп_вед_СПИСОК:id;
+					DELETE FROM sl_uni_tax_RPVED 	WHERE RPVED_id 	 = @zrp_qbe_рп_вед_СПИСОК:id;
+					DELETE FROM p_doxod_RPVED 		WHERE RPVED_id 	 = @zrp_qbe_рп_вед_СПИСОК:id;
+					DELETE FROM Lic_RPVED_TITLE 	WHERE id 		 = @zrp_qbe_рп_вед_СПИСОК:id;
+
+					LET @zrp_qbe_рп_вед:operat := 0;
+					DRAWFIELD @zrp_qbe_рп_вед, operat;
+
+					MSG 2037, @zrp_qbe_рп_вед_СПИСОК;
+
+				COMMIT;
+				};
+			};
+		};
+	};
+};
+
+free lic ,emps, sl_uni_tax, p_doxod, st;
+
+ALIAS _result = -1;
